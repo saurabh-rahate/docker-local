@@ -2,41 +2,113 @@ version: "3.8"
 
 services:
 
-  mongo:
+  # ─── Config Server ───────────────────────────────────────
+  mongo-configsvr:
     image: mongo:7
-    container_name: mongo
+    container_name: mongo-configsvr
     restart: always
+    command: ["--configsvr", "--replSet", "rsConfig", "--bind_ip_all", "--port", "27019"]
     ports:
-      - "27017:27017"
-    environment:
-      MONGO_INITDB_DATABASE: admin
-    command: ["--replSet", "rs0", "--bind_ip_all"]
+      - "27019:27019"
     volumes:
-      - mongo_data:/data/db
+      - configsvr_data:/data/db
     healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      test: ["CMD", "mongosh", "--port", "27019", "--eval", "db.adminCommand('ping')"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 10s
 
-  mongo-init:
+  mongo-configsvr-init:
     image: mongo:7
-    container_name: mongo-init
+    container_name: mongo-configsvr-init
     restart: "no"
     depends_on:
-      mongo:
+      mongo-configsvr:
         condition: service_healthy
     entrypoint: >
       bash -c "
-        mongosh --host mongo:27017 --eval \"
+        mongosh --host mongo-configsvr:27019 --eval \"
           rs.initiate({
-            _id: 'rs0',
-            members: [{ _id: 0, host: 'mongo:27017' }]
+            _id: 'rsConfig',
+            configsvr: true,
+            members: [{ _id: 0, host: 'mongo-configsvr:27019' }]
           })
         \"
       "
 
+  # ─── Shard 1 ─────────────────────────────────────────────
+  mongo-shard1:
+    image: mongo:7
+    container_name: mongo-shard1
+    restart: always
+    command: ["--shardsvr", "--replSet", "rsShard1", "--bind_ip_all", "--port", "27018"]
+    ports:
+      - "27018:27018"
+    volumes:
+      - shard1_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--port", "27018", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  mongo-shard1-init:
+    image: mongo:7
+    container_name: mongo-shard1-init
+    restart: "no"
+    depends_on:
+      mongo-shard1:
+        condition: service_healthy
+    entrypoint: >
+      bash -c "
+        mongosh --host mongo-shard1:27018 --eval \"
+          rs.initiate({
+            _id: 'rsShard1',
+            members: [{ _id: 0, host: 'mongo-shard1:27018' }]
+          })
+        \"
+      "
+
+  # ─── Mongos Router ───────────────────────────────────────
+  mongos:
+    image: mongo:7
+    container_name: mongos
+    restart: always
+    command: ["mongos", "--configdb", "rsConfig/mongo-configsvr:27019", "--bind_ip_all", "--port", "27017"]
+    ports:
+      - "27017:27017"
+    depends_on:
+      mongo-configsvr-init:
+        condition: service_completed_successfully
+      mongo-shard1-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "mongosh", "--port", "27017", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # ─── Cluster Init ─────────────────────────────────────────
+  mongo-cluster-init:
+    image: mongo:7
+    container_name: mongo-cluster-init
+    restart: "no"
+    depends_on:
+      mongos:
+        condition: service_healthy
+    entrypoint: >
+      bash -c "
+        mongosh --host mongos:27017 --eval \"
+          sh.addShard('rsShard1/mongo-shard1:27018');
+          sh.enableSharding('gwfinn_db_local');
+          sh.shardCollection('gwfinn_db_local.sample', { _id: 'hashed' });
+        \"
+      "
+
+  # ─── Mongo Express ───────────────────────────────────────
   mongo-express:
     image: mongo-express:1.0.2
     container_name: mongo-express
@@ -44,13 +116,14 @@ services:
     ports:
       - "8081:8081"
     environment:
-      ME_CONFIG_MONGODB_URL: mongodb://mongo:27017/?replicaSet=rs0
+      ME_CONFIG_MONGODB_URL: mongodb://mongos:27017/?replicaSet=rsShard1
       ME_CONFIG_BASICAUTH: "false"
       ME_CONFIG_MONGODB_ENABLE_ADMIN: "true"
     depends_on:
-      mongo:
+      mongos:
         condition: service_healthy
 
+  # ─── Kafka ───────────────────────────────────────────────
   kafka:
     image: confluentinc/cp-kafka:7.6.0
     container_name: kafka
@@ -80,6 +153,7 @@ services:
       retries: 5
       start_period: 15s
 
+  # ─── Kafka UI ─────────────────────────────────────────────
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
     container_name: kafka-ui
@@ -89,10 +163,13 @@ services:
     environment:
       KAFKA_CLUSTERS_0_NAME: local
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      KAFKA_CLUSTERS_0_KAFKACONNECT_0_NAME: kafka-connect
+      KAFKA_CLUSTERS_0_KAFKACONNECT_0_ADDRESS: http://kafka-connect:8083
     depends_on:
       kafka:
         condition: service_healthy
 
+  # ─── Kafka Connect ────────────────────────────────────────
   kafka-connect:
     image: confluentinc/cp-kafka-connect:7.6.0
     container_name: kafka-connect
@@ -133,5 +210,6 @@ services:
         condition: service_healthy
 
 volumes:
-  mongo_data:
+  configsvr_data:
+  shard1_data:
   kafka_data:
