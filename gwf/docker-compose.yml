@@ -208,7 +208,9 @@ services:
       - /bin/bash
       - -c
       - |
-        sleep 20 &&
+        echo "Waiting for Kafka to be ready..."
+        cub kafka-ready -b kafka:29092 1 60
+        echo "Kafka is ready, starting Connect..."
         connect-standalone \
           /kafka-connect/config/connect-standalone.properties \
           /kafka-connect/config/MongoSourceConnector.properties \
