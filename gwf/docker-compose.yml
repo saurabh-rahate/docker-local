@@ -4,106 +4,78 @@ services:
 
   # ─── Config Server ───────────────────────────────────────
   mongo-configsvr:
-    image: mongo:7
+    image: bitnami/mongodb:8.0
     container_name: mongo-configsvr
     restart: always
-    command: ["--configsvr", "--replSet", "rsConfig", "--bind_ip_all", "--port", "27019"]
+    environment:
+      MONGODB_REPLICA_SET_MODE: configsvr
+      MONGODB_REPLICA_SET_NAME: rsConfig
+      MONGODB_PORT_NUMBER: "27019"
+      MONGODB_ADVERTISED_HOSTNAME: mongo-configsvr
+      ALLOW_EMPTY_PASSWORD: "yes"
     ports:
       - "27019:27019"
     volumes:
-      - configsvr_data:/data/db
+      - configsvr_data:/bitnami/mongodb
     healthcheck:
       test: ["CMD", "mongosh", "--port", "27019", "--eval", "db.adminCommand('ping')"]
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 10s
-
-  mongo-configsvr-init:
-    image: mongo:7
-    container_name: mongo-configsvr-init
-    restart: "no"
-    depends_on:
-      mongo-configsvr:
-        condition: service_healthy
-    entrypoint: >
-      bash -c "
-        mongosh --host mongo-configsvr:27019 --eval \"
-          try {
-            rs.initiate({
-              _id: 'rsConfig',
-              configsvr: true,
-              members: [{ _id: 0, host: 'mongo-configsvr:27019' }]
-            });
-          } catch(e) {
-            if (e.codeName !== 'AlreadyInitialized') throw e;
-            print('Already initialized, skipping.');
-          }
-        \"
-      "
+      start_period: 15s
 
   # ─── Shard 1 ─────────────────────────────────────────────
   mongo-shard1:
-    image: mongo:7
+    image: bitnami/mongodb:8.0
     container_name: mongo-shard1
     restart: always
-    command: ["--shardsvr", "--replSet", "rsShard1", "--bind_ip_all", "--port", "27018"]
+    environment:
+      MONGODB_REPLICA_SET_MODE: shardsvr
+      MONGODB_REPLICA_SET_NAME: rsShard1
+      MONGODB_PORT_NUMBER: "27018"
+      MONGODB_ADVERTISED_HOSTNAME: mongo-shard1
+      ALLOW_EMPTY_PASSWORD: "yes"
     ports:
       - "27018:27018"
     volumes:
-      - shard1_data:/data/db
+      - shard1_data:/bitnami/mongodb
     healthcheck:
       test: ["CMD", "mongosh", "--port", "27018", "--eval", "db.adminCommand('ping')"]
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 10s
-
-  mongo-shard1-init:
-    image: mongo:7
-    container_name: mongo-shard1-init
-    restart: "no"
-    depends_on:
-      mongo-shard1:
-        condition: service_healthy
-    entrypoint: >
-      bash -c "
-        mongosh --host mongo-shard1:27018 --eval \"
-          try {
-            rs.initiate({
-              _id: 'rsShard1',
-              members: [{ _id: 0, host: 'mongo-shard1:27018' }]
-            });
-          } catch(e) {
-            if (e.codeName !== 'AlreadyInitialized') throw e;
-            print('Already initialized, skipping.');
-          }
-        \"
-      "
+      start_period: 15s
 
   # ─── Mongos Router ───────────────────────────────────────
   mongos:
-    image: mongo:7
+    image: bitnami/mongodb:8.0
     container_name: mongos
     restart: always
-    command: ["mongos", "--configdb", "rsConfig/mongo-configsvr:27019", "--bind_ip_all", "--port", "27017"]
+    environment:
+      MONGODB_MONGOS_MODE: "yes"
+      MONGODB_CFG_PRIMARY_HOST: mongo-configsvr
+      MONGODB_CFG_REPLICA_SET_NAME: rsConfig
+      MONGODB_CFG_PORT_NUMBER: "27019"
+      MONGODB_PORT_NUMBER: "27017"
+      MONGODB_ADVERTISED_HOSTNAME: mongos
+      ALLOW_EMPTY_PASSWORD: "yes"
     ports:
       - "27017:27017"
     depends_on:
-      mongo-configsvr-init:
-        condition: service_completed_successfully
-      mongo-shard1-init:
-        condition: service_completed_successfully
+      mongo-configsvr:
+        condition: service_healthy
+      mongo-shard1:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "mongosh", "--port", "27017", "--eval", "db.adminCommand('ping')"]
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 15s
+      start_period: 20s
 
-  # ─── Cluster Init ─────────────────────────────────────────
+  # ─── Cluster Init (add shard + enable sharding) ───────────
   mongo-cluster-init:
-    image: mongo:7
+    image: bitnami/mongodb:8.0
     container_name: mongo-cluster-init
     restart: "no"
     depends_on:
@@ -111,7 +83,7 @@ services:
         condition: service_healthy
     entrypoint: >
       bash -c "
-        mongosh --host mongos:27017 --eval \"
+        mongosh --host mongos --port 27017 --eval \"
           sh.addShard('rsShard1/mongo-shard1:27018');
           sh.enableSharding('gwfinn_db_local');
         \"
@@ -125,7 +97,7 @@ services:
     ports:
       - "8081:8081"
     environment:
-      ME_CONFIG_MONGODB_URL: mongodb://mongos:27017/?replicaSet=rsShard1
+      ME_CONFIG_MONGODB_URL: mongodb://mongos:27017/
       ME_CONFIG_BASICAUTH: "false"
       ME_CONFIG_MONGODB_ENABLE_ADMIN: "true"
     depends_on:
@@ -134,7 +106,7 @@ services:
 
   # ─── Kafka ───────────────────────────────────────────────
   kafka:
-    image: confluentinc/cp-kafka:7.6.0
+    image: confluentinc/cp-kafka:7.3.2
     container_name: kafka
     restart: always
     ports:
@@ -152,15 +124,16 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
     volumes:
       - kafka_data:/var/lib/kafka/data
     healthcheck:
       test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
       interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
 
   # ─── Kafka UI ─────────────────────────────────────────────
   kafka-ui:
@@ -180,7 +153,7 @@ services:
 
   # ─── Kafka Connect ────────────────────────────────────────
   kafka-connect:
-    image: confluentinc/cp-kafka-connect:7.6.0
+    image: confluentinc/cp-kafka-connect:latest
     container_name: kafka-connect
     restart: always
     ports:
