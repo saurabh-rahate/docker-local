@@ -11,7 +11,6 @@ services:
       ALLOW_EMPTY_PASSWORD: "yes"
       MONGODB_REPLICA_SET_MODE: primary
       MONGODB_REPLICA_SET_NAME: rsConfig
-      MONGODB_REPLICA_SET_KEY: replicasetkey123
       MONGODB_ADVERTISED_HOSTNAME: mongo-configsvr
       MONGODB_PORT_NUMBER: "27019"
       MONGODB_EXTRA_FLAGS: "--configsvr"
@@ -35,7 +34,6 @@ services:
       ALLOW_EMPTY_PASSWORD: "yes"
       MONGODB_REPLICA_SET_MODE: primary
       MONGODB_REPLICA_SET_NAME: rsShard1
-      MONGODB_REPLICA_SET_KEY: replicasetkey123
       MONGODB_ADVERTISED_HOSTNAME: mongo-shard1
       MONGODB_PORT_NUMBER: "27018"
       MONGODB_EXTRA_FLAGS: "--shardsvr"
@@ -51,17 +49,19 @@ services:
       start_period: 15s
 
   # ─── Mongos Router ───────────────────────────────────────
-  # NOTE: plain bitnami/mongodb does not have a mongos binary/mode.
-  # We use plain mongo:7 image only for mongos process (it's just the router, no data).
   mongos:
-    image: mongo:7
+    image: bitnami/mongodb:8.0
     container_name: mongos
     restart: always
-    command: ["mongos", "--configdb", "rsConfig/mongo-configsvr:27019", "--bind_ip_all", "--port", "27017", "--keyFile", "/etc/mongo-keyfile"]
+    entrypoint: []
+    command: >
+      bash -c "
+        mongos --configdb rsConfig/mongo-configsvr:27019
+               --bind_ip_all
+               --port 27017
+      "
     ports:
       - "27017:27017"
-    volumes:
-      - ./mongo-keyfile:/etc/mongo-keyfile:ro
     depends_on:
       mongo-configsvr:
         condition: service_healthy
@@ -76,7 +76,7 @@ services:
 
   # ─── Cluster Init ──────────────────────────────────────
   mongo-cluster-init:
-    image: mongo:7
+    image: bitnami/mongodb:8.0
     container_name: mongo-cluster-init
     restart: "no"
     depends_on:
