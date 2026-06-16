@@ -8,11 +8,13 @@ services:
     container_name: mongo-configsvr
     restart: always
     environment:
-      MONGODB_REPLICA_SET_MODE: configsvr
-      MONGODB_REPLICA_SET_NAME: rsConfig
-      MONGODB_PORT_NUMBER: "27019"
-      MONGODB_ADVERTISED_HOSTNAME: mongo-configsvr
       ALLOW_EMPTY_PASSWORD: "yes"
+      MONGODB_REPLICA_SET_MODE: primary
+      MONGODB_REPLICA_SET_NAME: rsConfig
+      MONGODB_REPLICA_SET_KEY: replicasetkey123
+      MONGODB_ADVERTISED_HOSTNAME: mongo-configsvr
+      MONGODB_PORT_NUMBER: "27019"
+      MONGODB_EXTRA_FLAGS: "--configsvr"
     ports:
       - "27019:27019"
     volumes:
@@ -30,11 +32,13 @@ services:
     container_name: mongo-shard1
     restart: always
     environment:
-      MONGODB_REPLICA_SET_MODE: shardsvr
-      MONGODB_REPLICA_SET_NAME: rsShard1
-      MONGODB_PORT_NUMBER: "27018"
-      MONGODB_ADVERTISED_HOSTNAME: mongo-shard1
       ALLOW_EMPTY_PASSWORD: "yes"
+      MONGODB_REPLICA_SET_MODE: primary
+      MONGODB_REPLICA_SET_NAME: rsShard1
+      MONGODB_REPLICA_SET_KEY: replicasetkey123
+      MONGODB_ADVERTISED_HOSTNAME: mongo-shard1
+      MONGODB_PORT_NUMBER: "27018"
+      MONGODB_EXTRA_FLAGS: "--shardsvr"
     ports:
       - "27018:27018"
     volumes:
@@ -47,20 +51,17 @@ services:
       start_period: 15s
 
   # ─── Mongos Router ───────────────────────────────────────
+  # NOTE: plain bitnami/mongodb does not have a mongos binary/mode.
+  # We use plain mongo:7 image only for mongos process (it's just the router, no data).
   mongos:
-    image: bitnami/mongodb:8.0
+    image: mongo:7
     container_name: mongos
     restart: always
-    environment:
-      MONGODB_MONGOS_MODE: "yes"
-      MONGODB_CFG_PRIMARY_HOST: mongo-configsvr
-      MONGODB_CFG_REPLICA_SET_NAME: rsConfig
-      MONGODB_CFG_PORT_NUMBER: "27019"
-      MONGODB_PORT_NUMBER: "27017"
-      MONGODB_ADVERTISED_HOSTNAME: mongos
-      ALLOW_EMPTY_PASSWORD: "yes"
+    command: ["mongos", "--configdb", "rsConfig/mongo-configsvr:27019", "--bind_ip_all", "--port", "27017", "--keyFile", "/etc/mongo-keyfile"]
     ports:
       - "27017:27017"
+    volumes:
+      - ./mongo-keyfile:/etc/mongo-keyfile:ro
     depends_on:
       mongo-configsvr:
         condition: service_healthy
@@ -73,9 +74,9 @@ services:
       retries: 5
       start_period: 20s
 
-  # ─── Cluster Init (add shard + enable sharding) ───────────
+  # ─── Cluster Init ──────────────────────────────────────
   mongo-cluster-init:
-    image: bitnami/mongodb:8.0
+    image: mongo:7
     container_name: mongo-cluster-init
     restart: "no"
     depends_on:
